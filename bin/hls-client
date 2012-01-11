@@ -3,7 +3,91 @@
 use strict;
 use warnings;
 
-# http://admin.hexten.net/bbc/hls/pl/http/wim_http.m3u8
+use Path::Class;
+use LWP::UserAgent;
+use URI;
+
+client( @ARGV );
+
+sub client {
+  my @q = @_;
+  while ( my $uri = shift @q ) {
+    my ( $content, $ct ) = fetch( $uri );
+    print "$uri -> $ct\n";
+    if ( $ct eq 'application/x-mpegurl' || $uri =~ /\.m3u8$/ ) {
+      $content = fixup_m3u8(
+        $content,
+        sub {
+          my $u = URI->new_abs( $_[0], $uri );
+          push @q, $u;
+          return uri_to_file( $u );
+        }
+      );
+    }
+    stash( $content, uri_to_file( $uri ) );
+  }
+}
+
+sub uri_to_file {
+  my $uri = shift;
+  $uri =~ s@.*?/([^/]+)$@$1@;
+  return $uri;
+}
+
+sub stash {
+  my ( $data, $name ) = @_;
+  print { file( $name )->openw } $data;
+}
+
+sub fetch {
+  my $uri  = shift;
+  my $ua   = LWP::UserAgent->new;
+  my $resp = $ua->get( $uri );
+  die $resp->status_line unless $resp->is_success;
+
+  return ( $resp->content, $resp->header( 'Content-Type' ) );
+}
+
+sub fixup_args {
+  my ( $args, $mapper ) = @_;
+
+  my @t = ();
+  while ( $args =~ /\G([^=]+)=((?:"(?:\\.|[^"])*"|[^,])*),?/g ) {
+    my ( $k, $v ) = ( $1, $2 );
+    if ( $k eq 'URI' ) {
+      $v =~ s/^"(.*?)"$/$1/;
+      $v = '"' . $mapper->( $v ) . '"';
+    }
+    push @t, "$k=$v";
+  }
+
+  return join ',', @t;
+}
+
+sub fixup_m3u8 {
+  my ( $m3u8, $mapper ) = @_;
+
+  my @l    = ();
+  my $last = '';
+  for my $ln ( split /\n/, $m3u8 ) {
+    $ln =~ s/\r//g;
+    next if $ln =~ /^\s*$/;
+
+    if ( $ln =~ /^#(.*)/ ) {
+      my $prag = $1;
+      my ( $dir, $tail ) = split /:/, $prag, 2;
+      $tail = fixup_args( $tail, $mapper )
+       if $dir eq 'EXT-X-KEY';
+      push @l, "#" . join ':', grep defined, $dir, $tail;
+      $last = $dir;
+      next;
+    }
+
+    push @l, $mapper->( $ln );
+  }
+
+  return join "\n", @l, '';
+}
 
 # vim:ts=2:sw=2:sts=2:et:ft=perl
 
